@@ -1,6 +1,6 @@
 # Predict.fun 5-minute bot (BTC / ETH / BNB)
 
-Strategy from the proposal: in each 5-minute Up/Down window, buy the **first side whose ask reaches the trigger**
+Strategy: in each 5-minute Up/Down window, buy the **first side whose ask reaches the trigger**
 (default 0.90) with a slippage-capped buy, **hold to resolution**, one entry per market per window.
 Dashboard controls the bot and switches between three modes.
 
@@ -33,7 +33,7 @@ The dashboard binds to localhost and every API call needs the printed token.
 Buying at ~0.91 pays +0.09 on a win and loses 0.91 on a miss, so you need a win rate above roughly 91-92% just to
 break even. Fees at these prices are small (~0.2c/share); the win rate is what decides it.
 
-## Deviations from the proposal
+## Deviations from earlier models
 - Books come from the **WebSocket** (no rate-limit cost, lower latency). A REST orderbook probe every 5 s feeds the lag guard.
 - "Market buy" is a **fill-or-kill limit at trigger x (1 + slippage%)** (0.90 -> 0.918): an ask that gaps past the cap is skipped, matching the proposal's 0.90-0.92 fill band.
 - Claim check uses balance before/after `redeem`, not the positions endpoint.
