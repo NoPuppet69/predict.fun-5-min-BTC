@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Predict 5m bot</title>
+<style>
+:root{--bg:#0f1115;--card:#171a21;--fg:#e6e8ee;--mut:#8b93a7;--bd:#262b36;--ok:#3ecf8e;--bad:#ef5b5b;--warn:#f0b429;--acc:#6ea8fe}
+@media (prefers-color-scheme:light){:root{--bg:#f5f6f8;--card:#fff;--fg:#14171f;--mut:#667085;--bd:#dfe3ea;--ok:#12a36a;--bad:#d23b3b;--warn:#b7791f;--acc:#2563eb}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;padding:16px;max-width:1200px;margin-inline:auto}
+h1{font-size:18px;margin:0}h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin-bottom:12px;overflow-x:auto}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.grow{flex:1}
+.pill{padding:2px 8px;border-radius:99px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--bd);white-space:nowrap}th{color:var(--mut);font-weight:500;font-size:12px}
+button{background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px 12px;cursor:pointer;font:inherit}
+button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button.d{background:var(--bad);color:#fff;border-color:var(--bad)}button.on{outline:2px solid var(--acc)}
+input,select{background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:5px 8px;width:92px;font:inherit}
+label{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--mut)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.kpi b{display:block;font-size:18px;color:var(--fg)}.kpi{color:var(--mut);font-size:12px}
+.banner{padding:8px 12px;border-radius:8px;margin-bottom:12px;border:1px solid var(--bd)}
+</style></head><body>
+<div class="row" style="margin-bottom:12px">
+  <h1>Predict.fun 5-minute bot</h1><span id="modeBadge" class="pill"></span><span id="runBadge" class="pill"></span>
+  <span class="grow"></span>
+  <span id="health" class="pill"></span>
+</div>
+<div id="banner"></div>
+
+<div class="card"><h2>Mode</h2>
+  <div class="row">
+    <button data-mode="shadow">Shadow &mdash; live data, simulated fills</button>
+    <button data-mode="test">Test &mdash; testnet collateral</button>
+    <button data-mode="live">Live &mdash; real assets</button>
+  </div>
+  <div class="kpi" style="margin-top:6px">Switching stops the bot. Each mode keeps its own log and P&amp;L in <code>data/&lt;mode&gt;/</code>.</div>
+</div>
+
+<div class="card"><h2>Controls</h2>
+  <div class="row">
+    <label>Trigger ask<input id="trigger" step="0.01"></label>
+    <label>Clip $ (1&ndash;20)<input id="clipUsd" step="1"></label>
+    <label>Slippage %<input id="slippagePct" step="0.1"></label>
+    <label>Min secs left<input id="minSecondsLeft" step="1"></label>
+    <label>Max entry ask<input id="maxEntryAsk" step="0.01"></label>
+    <label>Daily drawdown $<input id="dailyDrawdownUsd" step="1"></label>
+    <label>Fee model<select id="feeModel"><option value="bps">feeRateBps</option><option value="poly_crypto">poly crypto</option></select></label>
+    <label>Fee &times;<input id="feeMult" step="0.1"></label>
+    <label>Auto-claim<select id="autoClaim"><option value="true">on</option><option value="false">off</option></select></label>
+    <button id="apply">Apply</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button class="p" id="start">Start</button><button id="stop">Stop</button><button class="d" id="halt">EMERGENCY HALT</button>
+    <button id="claim">Claim now</button><span class="grow"></span>
+    <button id="expj">Export JSONL</button><button id="expc">Export CSV</button>
+  </div>
+</div>
+
+<div class="card"><h2>Equity</h2><div class="kpis" id="kpis"></div></div>
+<div class="card"><h2>Live windows</h2><table id="rows"></table></div>
+<div class="card"><h2>Open wagers</h2><table id="open"></table></div>
+<div class="card"><h2>Recent results</h2><table id="res"></table></div>
+
+<script>
+const T=new URLSearchParams(location.search).get("t")||"";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const usd=v=>(v<0?"-":"")+"$"+Math.abs(v).toFixed(2);
+const pct=v=>(v>=0?"+":"")+v.toFixed(2)+"%";
+const cls=v=>v>0?"ok":v<0?"bad":"";
+async function api(path,body){
+  const r=await fetch("/api/"+path,{method:body===undefined?"GET":"POST",headers:{"x-token":T,"Content-Type":"application/json"},body:body===undefined?undefined:JSON.stringify(body)});
+  const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j;
+}
+const act=(p,b)=>api(p,b||{}).catch(e=>alert(e.message));
+let S=null,formLoaded=false,editing=false;
+document.querySelectorAll("[data-mode]").forEach(b=>b.onclick=async()=>{
+  const m=b.dataset.mode;let confirm;
+  if(m==="live"){confirm=prompt("LIVE trades real assets. Type LIVE to confirm.");if(confirm!=="LIVE")return}
+  formLoaded=false;await act("mode",{mode:m,confirm});
+});
+$("start").onclick=()=>act("start");$("stop").onclick=()=>act("stop");
+$("halt").onclick=()=>act("halt");$("claim").onclick=()=>act("claim");
+$("expj").onclick=()=>location.href=`/api/export?t=${T}&format=jsonl`;
+$("expc").onclick=()=>location.href=`/api/export?t=${T}&format=csv`;
+$("apply").onclick=async()=>{
+  const g=id=>$(id).value;
+  await act("settings",{trigger:+g("trigger"),clipUsd:+g("clipUsd"),slippagePct:+g("slippagePct"),minSecondsLeft:+g("minSecondsLeft"),maxEntryAsk:+g("maxEntryAsk"),dailyDrawdownUsd:+g("dailyDrawdownUsd"),feeModel:g("feeModel"),feeMult:+g("feeMult"),autoClaim:g("autoClaim")==="true"});
+  formLoaded=false;
+};
+document.querySelectorAll("input,select").forEach(e=>{e.onfocus=()=>editing=true;e.onblur=()=>editing=false});
+function fillForm(s){for(const k of Object.keys(s))if($(k)&&k!=="assets")$(k).value=String(s[k])}
+function table(el,head,rows){el.innerHTML="<tr>"+head.map(h=>`<th>${h}</th>`).join("")+"</tr>"+(rows.length?rows.map(r=>"<tr>"+r.map(c=>`<td>${c}</td>`).join("")+"</tr>").join(""):`<tr><td colspan="${head.length}" style="color:var(--mut)">none</td></tr>`)}
+function render(){
+  const s=S;if(!s)return;
+  $("modeBadge").textContent=s.mode.toUpperCase()+(s.mode==="test"?" (testnet)":s.mode==="shadow"?" (simulated)":" (REAL)");
+  $("modeBadge").className="pill "+(s.mode==="live"?"bad":s.mode==="test"?"warn":"ok");
+  $("runBadge").textContent=s.halted?"HALTED":s.running?"RUNNING":"STOPPED";
+  $("runBadge").className="pill "+(s.halted?"bad":s.running?"ok":"warn");
+  document.querySelectorAll("[data-mode]").forEach(b=>b.classList.toggle("on",b.dataset.mode===s.mode));
+  const h=s.health;
+  $("health").innerHTML=`ws <b class="${h.ws?"ok":"bad"}">${h.ws?"ok":"down"}</b> &middot; probe ${h.probeMs==null?"<b class='bad'>n/a</b>":h.probeMs+" ms"} &middot; loop ${(h.loopAgeMs/1000).toFixed(1)}s ago`;
+  let b="";
+  if(s.lastError)b+=`<div class="banner bad">Setup problem: ${esc(s.lastError)}</div>`;
+  if(s.halted)b+=`<div class="banner bad">Halted: ${esc(s.haltReason)}. Press Start to resume.</div>`;
+  if(s.mode==="shadow")b+=`<div class="banner">Shadow mode: fills are simulated against live mainnet books with estimated fees. Nothing is sent.</div>`;
+  $("banner").innerHTML=b;
+  if(!formLoaded&&!editing){fillForm(s.settings);formLoaded=true}
+  const e=s.equity,p=s.pnl,q=s.pnlPct,st=s.stats;
+  const k=(l,v,c)=>`<div class="kpi">${l}<b class="${c||""}">${v}</b></div>`;
+  $("kpis").innerHTML=k("Equity",usd(e.equity))+k("Free cash",usd(e.cash))+k("Open at cost",usd(e.openCost))+
+   ["hour","day","week","total"].map(x=>k("P&amp;L "+x,`${usd(p[x])} <small>${pct(q[x])}</small>`,cls(p[x]))).join("")+
+   k("Win rate",st.winRate==null?"-":(st.winRate*100).toFixed(1)+"% ("+st.wins+"/"+st.scored+")")+k("Windows seen",st.windows);
+  const now=Date.now();
+  table($("rows"),["Asset","Window","Time left","UP ask","DOWN ask","Trigger","Status"],s.rows.map(r=>{
+    if(!r.startsAt)return [r.asset,esc(r.slug),"","","","",esc(r.note||"")];
+    const left=Math.max(0,Math.round((r.endsAt-now)/1000)),pre=r.startsAt>now;
+    const f=v=>v==null?"-":v.toFixed(3);
+    const trig=r.hit?`<b class="warn">HIT</b>`:"armed";
+    return [r.asset,esc(r.slug),pre?"starts in "+Math.round((r.startsAt-now)/1000)+"s":left+"s",f(r.upAsk),f(r.dnAsk),trig,esc(r.status+(r.note?": "+r.note:""))+(r.bookAgeMs!=null&&r.bookAgeMs>s.settings.staleMs?` <span class="bad">stale ${Math.round(r.bookAgeMs/1000)}s</span>`:"")];
+  }));
+  table($("open"),["Window","Side","Shares","Entry","Cost","Resolves in"],s.open.map(o=>[esc(o.slug),o.side,o.shares.toFixed(2),o.avgPrice.toFixed(4),usd(o.cost),Math.max(0,Math.round((o.endsAt-now)/1000))+"s"]));
+  table($("res"),["When","Window","Side","Entry","Result","P&amp;L"],s.results.map(r=>[new Date(r.ts).toLocaleTimeString(),esc(r.slug),r.side,r.avgPrice.toFixed(4),r.won?`<span class="ok">WIN</span>`:`<span class="bad">LOSS</span>`+(r.inferred?" (inferred)":""),`<span class="${cls(r.pnl)}">${usd(r.pnl)}</span>`]));
+}
+async function poll(){try{S=await api("state");render()}catch(e){$("banner").innerHTML=`<div class="banner bad">Dashboard: ${esc(e.message)}</div>`}}
+setInterval(poll,1000);poll();
+</script></body></html>
